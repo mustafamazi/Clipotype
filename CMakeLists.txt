@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.22)
-project(Clipotype VERSION 0.1.0)
+
+# Universal binary, macOS 11+. Must be set before project().
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "")
+endif()
+
+project(Clipotype VERSION 1.1.0)
 
 option(CLIPOTYPE_COPY_AFTER_BUILD "Copy plugin to the system plugin folder after build" ON)
 
@@ -16,6 +23,12 @@ FetchContent_Declare(JUCE
     GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(JUCE)
 
+if(APPLE)
+    set(CLIPOTYPE_FORMATS VST3 AU Standalone)
+else()
+    set(CLIPOTYPE_FORMATS VST3 Standalone)
+endif()
+
 juce_add_plugin(Clipotype
     COMPANY_NAME "Mustafa"
     IS_SYNTH FALSE
@@ -25,7 +38,11 @@ juce_add_plugin(Clipotype
     COPY_PLUGIN_AFTER_BUILD ${CLIPOTYPE_COPY_AFTER_BUILD}
     PLUGIN_MANUFACTURER_CODE Mstf
     PLUGIN_CODE Clp1
-    FORMATS VST3 Standalone
+    FORMATS ${CLIPOTYPE_FORMATS}
+    HARDENED_RUNTIME_ENABLED TRUE
+    HARDENED_RUNTIME_OPTIONS com.apple.security.device.audio-input
+    MICROPHONE_PERMISSION_ENABLED TRUE
+    MICROPHONE_PERMISSION_TEXT "Clipotype needs audio input to process sound in standalone mode."
     PRODUCT_NAME "Clipotype")
 
 juce_add_binary_data(ClipotypeAssets
