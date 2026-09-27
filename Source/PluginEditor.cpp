@@ -18,6 +18,7 @@ namespace
     constexpr float amountLabelWidthRatio = 80.0f  / 720.0f;
     constexpr float deltaBypassWidthRatio = 90.0f  / 720.0f;
     constexpr float amountSliderGapRatio  = 10.0f  / 720.0f;
+    constexpr float soloStripWidthRatio   = 50.0f  / 720.0f;
     constexpr float amountSliderInsetRatio = 14.0f / 600.0f;
 
     constexpr float knobHoverScale       = 1.06f;
@@ -137,6 +138,12 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     addAndMakeVisible (deltaButton);
     addAndMakeVisible (bypassButton);
 
+    soloButton.onToggle = [this] (bool isOn)
+    {
+        setParam (processorRef.apvts, "solo", isOn ? (float) ((int) currentBand + 1) : 0.0f);
+    };
+    addChildComponent (soloButton); // visibility is driven by updateBandLabelVisibility()
+
     addAndMakeVisible (frequencyMap);
     frequencyMap.onBandSelected = [this] (int bandIndex)
     {
@@ -148,7 +155,10 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
 
     // Single source of truth for band selection: sets currentBand, syncs the top
     // labels' toggle state, the parameter attachments and the frequency map's highlight.
-    selectBand (Band::low);
+    // Start on the soloed band (if any), so selectBand() doesn't move a restored solo.
+    const auto initialSolo = getSolo();
+    const auto initialBand = initialSolo == 2 ? Band::mid : initialSolo == 3 ? Band::high : Band::low;
+    selectBand (isBandAvailable (initialBand) ? initialBand : Band::low);
     updateBandLabelVisibility();
 
     currentBackgroundColour = computeTargetBackgroundColour();
@@ -177,6 +187,20 @@ int AudioPluginAudioProcessorEditor::getNumCrossovers() const
     return 0;
 }
 
+int AudioPluginAudioProcessorEditor::getSolo() const
+{
+    if (auto* param = processorRef.apvts.getRawParameterValue ("solo"))
+        return juce::jlimit (0, 3, (int) std::round (param->load()));
+
+    return 0;
+}
+
+bool AudioPluginAudioProcessorEditor::isBandAvailable (Band band) const
+{
+    const auto numCrossovers = getNumCrossovers();
+    return band == Band::mid ? numCrossovers >= 2 : numCrossovers >= 1;
+}
+
 juce::Colour AudioPluginAudioProcessorEditor::computeTargetBackgroundColour() const
 {
     if (getNumCrossovers() == 0)
@@ -193,6 +217,11 @@ void AudioPluginAudioProcessorEditor::timerCallback()
 
     if (numCrossovers != lastKnownNumCrossovers)
     {
+        // Solo is meaningless with a single band: clear it when the user drops to 0
+        // crossovers (only on a real transition, not on the editor's first tick).
+        if (numCrossovers == 0 && lastKnownNumCrossovers > 0 && getSolo() != 0)
+            setParam (processorRef.apvts, "solo", 0.0f);
+
         lastKnownNumCrossovers = numCrossovers;
 
         // If the currently selected band's label is no longer shown, fall back to LOW.
@@ -261,6 +290,19 @@ void AudioPluginAudioProcessorEditor::timerCallback()
     bypassButton.setToggleState (processorRef.apvts.getRawParameterValue ("bypass")->load() > 0.5f,
                                  juce::dontSendNotification);
 
+    // Same for SOLO. If automation soloed a band other than the selected one, follow
+    // it, so the "S" button always refers to the band whose controls are shown.
+    const auto solo = getSolo();
+    soloButton.setToggleState (solo != 0, juce::dontSendNotification);
+
+    if (solo != 0)
+    {
+        const auto soloBand = solo == 1 ? Band::low : solo == 2 ? Band::mid : Band::high;
+
+        if (soloBand != currentBand && isBandAvailable (soloBand))
+            selectBand (soloBand);
+    }
+
     // Spectrum: pull the latest FFT magnitudes and tint the fill with a dark shade
     // of the current (animated) background colour.
     frequencyMap.updateSpectrum();
@@ -293,6 +335,7 @@ void AudioPluginAudioProcessorEditor::updateBandLabelVisibility()
     lowButton.setVisible  (numCrossovers >= 1);
     midButton.setVisible  (numCrossovers >= 2);
     highButton.setVisible (numCrossovers >= 1);
+    soloButton.setVisible (numCrossovers >= 1);
 }
 
 //==============================================================================
@@ -336,6 +379,10 @@ void AudioPluginAudioProcessorEditor::selectBand (Band newBand)
     lowButton.setToggleState  (newBand == Band::low,  juce::dontSendNotification);
     midButton.setToggleState  (newBand == Band::mid,  juce::dontSendNotification);
     highButton.setToggleState (newBand == Band::high, juce::dontSendNotification);
+
+    // While soloing, the solo follows the selection to the new band.
+    if (getSolo() != 0)
+        setParam (processorRef.apvts, "solo", (float) ((int) currentBand + 1));
 
     updateBandAttachments();
     frequencyMap.setSelectedBand ((int) currentBand);
@@ -416,6 +463,13 @@ void AudioPluginAudioProcessorEditor::resized()
     titleLabel.setBounds (area.removeFromTop (heightPx (titleHeightRatio)));
 
     auto bandRow = area.removeFromTop (heightPx (bandRowHeightRatio));
+
+    // SOLO pill sits at the right end of the band row; an equal strip is trimmed on
+    // the left so the three band labels stay centred. 28px tall = 16px pill + glow margin.
+    const auto soloStripWidth = widthPx (soloStripWidthRatio);
+    bandRow.removeFromLeft (soloStripWidth);
+    soloButton.setBounds (bandRow.removeFromRight (soloStripWidth).withSizeKeepingCentre (soloStripWidth, 28));
+
     const auto bandButtonWidth = bandRow.getWidth() / 3;
     lowButton.setBounds  (bandRow.removeFromLeft (bandButtonWidth));
     midButton.setBounds  (bandRow.removeFromLeft (bandButtonWidth));
@@ -454,10 +508,12 @@ void AudioPluginAudioProcessorEditor::resized()
     auto deltaBypassArea = amountRow.removeFromRight (widthPx (deltaBypassWidthRatio));
     amountSlider.setBounds (amountRow.reduced (widthPx (amountSliderGapRatio), heightPx (amountSliderInsetRatio)));
 
-    auto deltaBypassColumn = deltaBypassArea.withSizeKeepingCentre (deltaBypassArea.getWidth(), 38);
-    deltaButton.setBounds (deltaBypassColumn.removeFromTop (16));
-    deltaBypassColumn.removeFromTop (6);
-    bypassButton.setBounds (deltaBypassColumn.removeFromTop (16));
+    // Each button is 28px tall: the 16px pill is centred inside, leaving 6px above
+    // and below so the DropShadow glow isn't clipped. Those margins also act as the
+    // gap between the two pills (12px pill-to-pill).
+    auto deltaBypassColumn = deltaBypassArea.withSizeKeepingCentre (deltaBypassArea.getWidth(), 56);
+    deltaButton.setBounds (deltaBypassColumn.removeFromTop (28));
+    bypassButton.setBounds (deltaBypassColumn.removeFromTop (28));
 
     frequencyMap.setBounds (area); // everything left over is the reserved frequency map area
 }

@@ -4,8 +4,8 @@
 
 //==============================================================================
 // Flat, heptagon-based look: rotary knobs and the AMOUNT slider thumb are all
-// drawn as a regular seven-sided polygon, given a soft drop shadow and a thin
-// value-ring arc for a subtle 2.5D feel.
+// drawn as a regular seven-sided polygon and given a soft drop shadow for a
+// subtle 2.5D feel.
 //
 // Central font management: getTypefaceForFont() returns the embedded Roboto Mono
 // typeface for every Font resolved through this look and feel. For this to take

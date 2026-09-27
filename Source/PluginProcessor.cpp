@@ -29,6 +29,7 @@ AudioPluginAudioProcessor::AudioPluginAudioProcessor()
     amountParam        = apvts.getRawParameterValue ("amount");
     deltaParam         = apvts.getRawParameterValue ("delta");
     bypassParam        = apvts.getRawParameterValue ("bypass");
+    soloParam          = apvts.getRawParameterValue ("solo");
 }
 
 AudioPluginAudioProcessor::~AudioPluginAudioProcessor()
@@ -151,6 +152,40 @@ void AudioPluginAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
     dryDelayLine.prepare (dryDelaySpec);
     dryDelayLine.setDelay ((float) latencySamples);
     dryDelayLine.reset();
+
+    // Band parameters and threshold are consumed per oversampled sample -> ovSampleRate.
+    std::atomic<float>* const driveParams[]     { lowDriveParam,     midDriveParam,     highDriveParam };
+    std::atomic<float>* const intensityParams[] { lowIntensityParam, midIntensityParam, highIntensityParam };
+    std::atomic<float>* const stereoParams[]    { lowStereoParam,    midStereoParam,    highStereoParam };
+
+    for (int band = 0; band < numBands; ++band)
+    {
+        auto& s = bandSmoothers[(size_t) band];
+
+        s.driveGain.reset (ovSampleRate, smoothingRampSeconds);
+        s.intensity.reset (ovSampleRate, smoothingRampSeconds);
+        s.width.reset     (ovSampleRate, smoothingRampSeconds);
+
+        s.driveGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain ((driveParams[band]->load() / 100.0f) * 30.0f));
+        s.intensity.setCurrentAndTargetValue (intensityParams[band]->load() / 100.0f);
+        s.width.setCurrentAndTargetValue     (stereoParams[band]->load() / 100.0f);
+    }
+
+    thresholdGainSmoother.reset (ovSampleRate, smoothingRampSeconds);
+    thresholdGainSmoother.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (thresholdParam->load()));
+    thresholdGainScratch.assign ((size_t) ovBlockSize, 1.0f);
+
+    // Amount is applied after downsampling -> host sampleRate.
+    amountSmoother.reset (sampleRate, smoothingRampSeconds);
+    amountSmoother.setCurrentAndTargetValue (amountParam->load() / 100.0f);
+
+    // Crossover frequencies are advanced once per host block (skip (numSamples)) -> host sampleRate.
+    freq1Smoother.reset (sampleRate, smoothingRampSeconds);
+    freq2Smoother.reset (sampleRate, smoothingRampSeconds);
+    freq1Smoother.setCurrentAndTargetValue (juce::jlimit (20.0f, 20000.0f, freq1Param->load()));
+    freq2Smoother.setCurrentAndTargetValue (juce::jlimit (20.0f, 20000.0f, freq2Param->load()));
+
+    lastNumCrossovers = juce::jlimit (0, 2, (int) std::round (numCrossoversParam->load()));
 }
 
 void AudioPluginAudioProcessor::releaseResources()
@@ -227,16 +262,66 @@ void AudioPluginAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     const auto numCrossovers = juce::jlimit (0, 2, (int) std::round (numCrossoversParam->load()));
 
-    const auto freq1 = juce::jlimit (20.0f, 20000.0f, freq1Param->load());
-    // Guarantee freq2 > freq1 regardless of what the parameters are set to.
-    const auto freq2 = juce::jlimit (20.0f, 20000.0f, juce::jmax (freq2Param->load(), freq1 + 1.0f));
+    // Changing the band count re-routes the filters; stale state from the previous
+    // routing would otherwise produce a transient click.
+    if (numCrossovers != lastNumCrossovers)
+    {
+        crossover1LowFilter.reset();
+        crossover1HighFilter.reset();
+        crossover2LowFilter.reset();
+        crossover2HighFilter.reset();
+        lastNumCrossovers = numCrossovers;
+    }
 
-    const auto thresholdGain = juce::Decibels::decibelsToGain (thresholdParam->load());
+    // Band solo: 0 = off, 1 = low, 2 = mid, 3 = high. Treated as off when it can't
+    // apply (single band, or MID in two-band mode) so it never silences the output.
+    auto solo = juce::jlimit (0, 3, (int) std::round (soloParam->load()));
+
+    if (numCrossovers == 0 || (numCrossovers == 1 && solo == 2))
+        solo = 0;
+
+    const auto soloActive = solo != 0;
+    const auto lowGain    = (solo == 0 || solo == 1) ? 1.0f : 0.0f;
+    const auto midGain    = (solo == 0 || solo == 2) ? 1.0f : 0.0f;
+    const auto highGain   = (solo == 0 || solo == 3) ? 1.0f : 0.0f;
+
+    // Set smoother targets once per block; values are pulled per sample further down.
+    std::atomic<float>* const driveParams[]     { lowDriveParam,     midDriveParam,     highDriveParam };
+    std::atomic<float>* const intensityParams[] { lowIntensityParam, midIntensityParam, highIntensityParam };
+    std::atomic<float>* const stereoParams[]    { lowStereoParam,    midStereoParam,    highStereoParam };
+
+    for (int band = 0; band < numBands; ++band)
+    {
+        auto& s = bandSmoothers[(size_t) band];
+        s.driveGain.setTargetValue (juce::Decibels::decibelsToGain ((driveParams[band]->load() / 100.0f) * 30.0f));
+        s.intensity.setTargetValue (intensityParams[band]->load() / 100.0f);
+        s.width.setTargetValue     (stereoParams[band]->load() / 100.0f);
+    }
+
+    thresholdGainSmoother.setTargetValue (juce::Decibels::decibelsToGain (thresholdParam->load()));
+    // While soloing, the Amount mix is skipped (fully wet) so no dry signal leaks in;
+    // going through the smoother keeps the solo on/off transition click-free.
+    amountSmoother.setTargetValue (soloActive ? 1.0f : amountParam->load() / 100.0f);
+
+    // Crossover frequencies: smoothed, but advanced and applied only once per block,
+    // since setCutoffFrequency() recalculates coefficients. The per-block steps are
+    // small enough over the ramp that the cutoff glides instead of jumping.
+    freq1Smoother.setTargetValue (juce::jlimit (20.0f, 20000.0f, freq1Param->load()));
+    freq2Smoother.setTargetValue (juce::jlimit (20.0f, 20000.0f, freq2Param->load()));
+
+    const auto freq1 = freq1Smoother.skip (numSamples);
+    // Guarantee freq2 > freq1 regardless of what the parameters are set to.
+    const auto freq2 = juce::jlimit (20.0f, 20000.0f, juce::jmax (freq2Smoother.skip (numSamples), freq1 + 1.0f));
 
     // Upsample: all band processing below runs in the oversampled domain
     juce::dsp::AudioBlock<float> mainBlock (buffer);
     auto oversampledBlock = oversampling.processSamplesUp (mainBlock);
     const auto ovNumSamples = (int) oversampledBlock.getNumSamples();
+
+    jassert ((size_t) ovNumSamples <= thresholdGainScratch.size());
+
+    for (int sample = 0; sample < ovNumSamples; ++sample)
+        thresholdGainScratch[(size_t) sample] = thresholdGainSmoother.getNextValue();
 
     if (numCrossovers == 0)
     {
@@ -245,8 +330,12 @@ void AudioPluginAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         juce::dsp::AudioBlock<float> lowBlock (lowBandBuffer);
         lowBlock.copyFrom (oversampledBlock);
 
-        applyWaveshaper (lowBandBuffer, thresholdGain, lowDriveParam->load(), lowIntensityParam->load());
-        applyWidth (lowBandBuffer, lowStereoParam->load());
+        applyWaveshaper (lowBandBuffer, lowBand);
+        applyWidth (lowBandBuffer, lowBand);
+
+        // Keep the unused bands' smoothers in step so they don't ramp from stale values later.
+        skipBandSmoothers (midBand,  ovNumSamples);
+        skipBandSmoothers (highBand, ovNumSamples);
 
         for (int channel = 0; channel < numChannels; ++channel)
             std::copy_n (lowBandBuffer.getReadPointer (channel), ovNumSamples,
@@ -270,11 +359,13 @@ void AudioPluginAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         crossover1LowFilter.process (juce::dsp::ProcessContextReplacing<float> (lowBlock));
         crossover1HighFilter.process (juce::dsp::ProcessContextReplacing<float> (highBlock));
 
-        applyWaveshaper (lowBandBuffer,  thresholdGain, lowDriveParam->load(),  lowIntensityParam->load());
-        applyWaveshaper (highBandBuffer, thresholdGain, highDriveParam->load(), highIntensityParam->load());
+        applyWaveshaper (lowBandBuffer,  lowBand);
+        applyWaveshaper (highBandBuffer, highBand);
 
-        applyWidth (lowBandBuffer,  lowStereoParam->load());
-        applyWidth (highBandBuffer, highStereoParam->load());
+        applyWidth (lowBandBuffer,  lowBand);
+        applyWidth (highBandBuffer, highBand);
+
+        skipBandSmoothers (midBand, ovNumSamples);
 
         for (int channel = 0; channel < numChannels; ++channel)
         {
@@ -283,7 +374,7 @@ void AudioPluginAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             auto* highData = highBandBuffer.getReadPointer (channel);
 
             for (int sample = 0; sample < ovNumSamples; ++sample)
-                outData[sample] = lowData[sample] + highData[sample];
+                outData[sample] = lowGain * lowData[sample] + highGain * highData[sample];
         }
     }
     else // numCrossovers == 2
@@ -317,13 +408,13 @@ void AudioPluginAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         crossover2LowFilter.process (juce::dsp::ProcessContextReplacing<float> (midBlock));
         crossover2HighFilter.process (juce::dsp::ProcessContextReplacing<float> (highBlock));
 
-        applyWaveshaper (lowBandBuffer,  thresholdGain, lowDriveParam->load(),  lowIntensityParam->load());
-        applyWaveshaper (midBandBuffer,  thresholdGain, midDriveParam->load(),  midIntensityParam->load());
-        applyWaveshaper (highBandBuffer, thresholdGain, highDriveParam->load(), highIntensityParam->load());
+        applyWaveshaper (lowBandBuffer,  lowBand);
+        applyWaveshaper (midBandBuffer,  midBand);
+        applyWaveshaper (highBandBuffer, highBand);
 
-        applyWidth (lowBandBuffer,  lowStereoParam->load());
-        applyWidth (midBandBuffer,  midStereoParam->load());
-        applyWidth (highBandBuffer, highStereoParam->load());
+        applyWidth (lowBandBuffer,  lowBand);
+        applyWidth (midBandBuffer,  midBand);
+        applyWidth (highBandBuffer, highBand);
 
         for (int channel = 0; channel < numChannels; ++channel)
         {
@@ -333,7 +424,7 @@ void AudioPluginAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             auto* highData = highBandBuffer.getReadPointer (channel);
 
             for (int sample = 0; sample < ovNumSamples; ++sample)
-                outData[sample] = lowData[sample] + midData[sample] + highData[sample];
+                outData[sample] = lowGain * lowData[sample] + midGain * midData[sample] + highGain * highData[sample];
         }
     }
 
@@ -343,7 +434,8 @@ void AudioPluginAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     // Delta: replace the wet signal with (wet - dry), with a fixed +12dB makeup gain
     // since the difference signal is usually much quieter. Applied before the global
     // Amount mix below, so at Amount = 100% the output is exactly the delta signal.
-    if (deltaParam->load() > 0.5f)
+    // Disabled while soloing, so the soloed band is heard as-is.
+    if (deltaParam->load() > 0.5f && ! soloActive)
     {
         const auto deltaMakeupGain = juce::Decibels::decibelsToGain (12.0f);
 
@@ -358,15 +450,17 @@ void AudioPluginAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
 
     // Global dry/wet mix happens outside the oversampled path, after downsampling
-    const auto wetGain = amountParam->load() / 100.0f;
-
-    for (int channel = 0; channel < numChannels; ++channel)
+    for (int sample = 0; sample < numSamples; ++sample)
     {
-        auto* outData = buffer.getWritePointer (channel);
-        auto* dryData = dryBuffer.getReadPointer (channel);
+        const auto wetGain = amountSmoother.getNextValue();
 
-        for (int sample = 0; sample < numSamples; ++sample)
+        for (int channel = 0; channel < numChannels; ++channel)
+        {
+            auto* outData = buffer.getWritePointer (channel);
+            auto* dryData = dryBuffer.getReadPointer (channel);
+
             outData[sample] = dryData[sample] + wetGain * (outData[sample] - dryData[sample]);
+        }
     }
 
     // Bypass: host-driven via getBypassParameter(), so latency compensation stays
@@ -405,48 +499,65 @@ void AudioPluginAudioProcessor::computeSpectrum() noexcept
     spectrumReadyBufferIndex.store (writeIndex, std::memory_order_release);
 }
 
-void AudioPluginAudioProcessor::applyWaveshaper (juce::AudioBuffer<float>& bandBuffer,
-                                                  float thresholdGain,
-                                                  float drivePercent,
-                                                  float intensityPercent)
+void AudioPluginAudioProcessor::applyWaveshaper (juce::AudioBuffer<float>& bandBuffer, BandIndex band)
 {
     // Saturator: drive pushes the signal into the tanh curve and is never divided back out,
     // so the output stays pinned near the ceiling as drive increases (no automatic gain recovery).
-    const auto driveGain = juce::Decibels::decibelsToGain ((drivePercent / 100.0f) * 30.0f);
-    const auto m = intensityPercent / 100.0f;
+    auto& s = bandSmoothers[(size_t) band];
+    const auto numChannels = bandBuffer.getNumChannels();
+    auto* const* channels  = bandBuffer.getArrayOfWritePointers();
 
-    for (int channel = 0; channel < bandBuffer.getNumChannels(); ++channel)
+    // Sample-outer so each smoother advances exactly once per sample, not once per channel.
+    for (int sample = 0; sample < bandBuffer.getNumSamples(); ++sample)
     {
-        auto* data = bandBuffer.getWritePointer (channel);
+        const auto driveGain     = s.driveGain.getNextValue();
+        const auto m             = s.intensity.getNextValue();
+        const auto thresholdGain = thresholdGainScratch[(size_t) sample];
 
-        for (int sample = 0; sample < bandBuffer.getNumSamples(); ++sample)
+        for (int channel = 0; channel < numChannels; ++channel)
         {
-            const auto x    = (data[sample] * driveGain) / thresholdGain;
+            auto& data = channels[channel][sample];
+
+            const auto x    = (data * driveGain) / thresholdGain;
             const auto soft = std::tanh (x);
             const auto hard = juce::jlimit (-1.0f, 1.0f, x);
 
-            data[sample] = soft * (1.0f - m) + hard * m;
+            data = soft * (1.0f - m) + hard * m;
         }
     }
 }
 
-void AudioPluginAudioProcessor::applyWidth (juce::AudioBuffer<float>& bandBuffer, float widthPercent)
+void AudioPluginAudioProcessor::applyWidth (juce::AudioBuffer<float>& bandBuffer, BandIndex band)
 {
-    if (bandBuffer.getNumChannels() < 2)
-        return;
+    auto& widthSmoother = bandSmoothers[(size_t) band].width;
 
-    const auto widthFactor = widthPercent / 100.0f;
+    if (bandBuffer.getNumChannels() < 2)
+    {
+        widthSmoother.skip (bandBuffer.getNumSamples());
+        return;
+    }
+
     auto* left  = bandBuffer.getWritePointer (0);
     auto* right = bandBuffer.getWritePointer (1);
 
     for (int sample = 0; sample < bandBuffer.getNumSamples(); ++sample)
     {
+        const auto widthFactor = widthSmoother.getNextValue();
+
         const auto mid  = 0.5f * (left[sample] + right[sample]);
         const auto side = 0.5f * (left[sample] - right[sample]) * widthFactor;
 
         left[sample]  = mid + side;
         right[sample] = mid - side;
     }
+}
+
+void AudioPluginAudioProcessor::skipBandSmoothers (BandIndex band, int numSamples)
+{
+    auto& s = bandSmoothers[(size_t) band];
+    s.driveGain.skip (numSamples);
+    s.intensity.skip (numSamples);
+    s.width.skip (numSamples);
 }
 
 //==============================================================================
@@ -535,7 +646,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout AudioPluginAudioProcessor::c
 
         std::make_unique<juce::AudioParameterBool> ("delta", "Delta", false),
 
-        std::make_unique<juce::AudioParameterBool> ("bypass", "Bypass", false)
+        std::make_unique<juce::AudioParameterBool> ("bypass", "Bypass", false),
+
+        // 0 = off, 1 = low, 2 = mid, 3 = high. Appended last so existing parameter
+        // indices (and saved host automation) keep their positions.
+        std::make_unique<juce::AudioParameterInt> ("solo", "Solo", 0, 3, 0)
     };
 }
 

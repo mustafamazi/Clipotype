@@ -25,6 +25,8 @@ private:
     void updateBandLabelVisibility();
     void timerCallback() override;
     int getNumCrossovers() const;
+    int getSolo() const;
+    bool isBandAvailable (Band band) const;
     juce::Colour computeTargetBackgroundColour() const;
 
     void mouseEnter (const juce::MouseEvent&) override;
@@ -87,6 +89,10 @@ private:
                                    juce::Colour (0xFFFF8C42), juce::Colours::white, true };
     PillToggleButton bypassButton { "B", juce::Colour (ClipotypeLookAndFeel::textColourArgb),
                                    juce::Colour (0xFF3A3A3A), juce::Colour (0xFFD64545), false };
+
+    // Solos the currently selected band (writes 1/2/3 to "solo", or 0 when turned off).
+    PillToggleButton soloButton   { "S", juce::Colour (ClipotypeLookAndFeel::textColourArgb),
+                                   juce::Colour (0xFFF2C94C), juce::Colour (ClipotypeLookAndFeel::textColourArgb), true };
 
     FrequencyMapComponent frequencyMap;
 

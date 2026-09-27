@@ -112,16 +112,46 @@ private:
     std::atomic<float>* amountParam        = nullptr;
     std::atomic<float>* deltaParam         = nullptr;
     std::atomic<float>* bypassParam        = nullptr;
+    std::atomic<float>* soloParam          = nullptr;
 
     int lastEditorWidth  = 720;
     int lastEditorHeight = 600;
 
-    static void applyWidth (juce::AudioBuffer<float>& bandBuffer, float widthPercent);
+    //==============================================================================
+    // Parameter smoothing (removes zipper noise under automation / knob drags).
+    // Sample-rate domains matter here: band parameters and threshold are consumed
+    // per oversampled sample, so they're reset with the oversampled rate; Amount is
+    // consumed after downsampling, so it's reset with the host rate. Crossover
+    // frequencies are advanced per block (host rate) and applied once per block.
+    static constexpr double smoothingRampSeconds = 0.025;
 
-    static void applyWaveshaper (juce::AudioBuffer<float>& bandBuffer,
-                                  float thresholdGain,
-                                  float drivePercent,
-                                  float intensityPercent);
+    enum BandIndex { lowBand = 0, midBand, highBand, numBands };
+
+    struct BandSmoothers
+    {
+        // Drive is smoothed as a linear gain, multiplicatively (= linear in dB).
+        juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> driveGain;
+        juce::SmoothedValue<float> intensity; // 0..1 hard-clip blend
+        juce::SmoothedValue<float> width;     // 0..2 side gain
+    };
+
+    std::array<BandSmoothers, numBands> bandSmoothers;
+
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> thresholdGainSmoother;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> freq1Smoother;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> freq2Smoother;
+    juce::SmoothedValue<float> amountSmoother; // 0..1 wet gain
+
+    // Threshold is shared by every band, so it's advanced once per oversampled
+    // sample into this scratch array and each band reads from it.
+    std::vector<float> thresholdGainScratch;
+
+    // Last band count seen by processBlock; the crossover filters are reset when it changes.
+    int lastNumCrossovers = -1;
+
+    void applyWidth (juce::AudioBuffer<float>& bandBuffer, BandIndex band);
+    void applyWaveshaper (juce::AudioBuffer<float>& bandBuffer, BandIndex band);
+    void skipBandSmoothers (BandIndex band, int numSamples);
 
     //==============================================================================
     juce::dsp::FFT spectrumFft { spectrumFftOrder };
