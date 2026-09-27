@@ -1,0 +1,13 @@
+Clipotype v1.1 - Windows
+========================
+
+VST3 plugin
+-----------
+1. Copy the "Clipotype.vst3" folder into:
+   C:\Program Files\Common Files\VST3
+2. Open your DAW and rescan plugins.
+
+Standalone app
+--------------
+Run Clipotype.exe. If Windows SmartScreen shows a warning on first launch,
+click "More info" > "Run anyway".

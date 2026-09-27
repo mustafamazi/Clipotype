@@ -1,7 +1,20 @@
 cmake_minimum_required(VERSION 3.22)
 project(Clipotype VERSION 0.1.0)
 
-add_subdirectory($ENV{HOME}/JUCE ${CMAKE_BINARY_DIR}/JUCE)
+option(CLIPOTYPE_COPY_AFTER_BUILD "Copy plugin to the system plugin folder after build" ON)
+
+# Static MSVC runtime so users don't need the VC++ Redistributable.
+# Must be set before JUCE is added so it applies to all targets.
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
+include(FetchContent)
+FetchContent_Declare(JUCE
+    GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
+    GIT_TAG 9.0.1
+    GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(JUCE)
 
 juce_add_plugin(Clipotype
     COMPANY_NAME "Mustafa"
@@ -9,7 +22,7 @@ juce_add_plugin(Clipotype
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
     IS_MIDI_EFFECT FALSE
-    COPY_PLUGIN_AFTER_BUILD TRUE
+    COPY_PLUGIN_AFTER_BUILD ${CLIPOTYPE_COPY_AFTER_BUILD}
     PLUGIN_MANUFACTURER_CODE Mstf
     PLUGIN_CODE Clp1
     FORMATS VST3 Standalone

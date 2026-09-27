@@ -1,0 +1,33 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # No -G: CMake picks the newest installed Visual Studio generator on Windows
+      - name: Configure
+        run: cmake -S . -B build -A x64 -DCLIPOTYPE_COPY_AFTER_BUILD=OFF
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = "build/Clipotype_artefacts/Release"
+          New-Item -ItemType Directory -Path package | Out-Null
+          Copy-Item -Recurse "$out/VST3/Clipotype.vst3" package/
+          Copy-Item "$out/Standalone/Clipotype.exe" package/
+          Copy-Item Packaging/Windows/INSTALL.txt package/
+          Compress-Archive -Path package/* -DestinationPath Clipotype-v1.1-Windows.zip
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: Clipotype-v1.1-Windows.zip
+          archive: false
