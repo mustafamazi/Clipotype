@@ -1,5 +1,5 @@
 # Clipotype
-(docs/main.png)
+![Clipotype](docs/main.png)
 A multiband saturator / clipper plugin built with JUCE. Clipotype allows you to visually split your audio spectrum into three distinct frequency bands and apply different flavors of saturation and waveshaping to each band independently.
 
 ## Control & Parameters
