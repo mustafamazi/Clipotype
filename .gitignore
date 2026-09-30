@@ -1,4 +1,5 @@
 build/
+build-release/
 .DS_Store
 *.vst3
 *.component

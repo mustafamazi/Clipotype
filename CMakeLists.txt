@@ -30,7 +30,8 @@ else()
 endif()
 
 juce_add_plugin(Clipotype
-    COMPANY_NAME "Mustafa"
+    COMPANY_NAME "BopsAudio"
+    BUNDLE_ID com.bopsaudio.clipotype
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
@@ -52,6 +53,7 @@ juce_add_binary_data(ClipotypeAssets
 
 target_sources(Clipotype
     PRIVATE
+        Source/BrandBadge.cpp
         Source/ClipotypeLookAndFeel.cpp
         Source/FrequencyMapComponent.cpp
         Source/PillToggleButton.cpp

@@ -15,10 +15,10 @@ set -euo pipefail
 VERSION="1.1"
 PKG_NAME="Clipotype-v${VERSION}-macOS.pkg"
 NOTARY_PROFILE="clipotype-notary"
-BUNDLE_PREFIX="com.mustafa.clipotype"
+BUNDLE_PREFIX="com.bopsaudio.clipotype"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="${BUILD_DIR:-$HOME/Builds/Clipotype/build-release}"
+BUILD_DIR="${BUILD_DIR:-$ROOT/build-release}"
 ARTEFACTS="$BUILD_DIR/Clipotype_artefacts/Release"
 ENTITLEMENTS="$BUILD_DIR/Clipotype_artefacts/JuceLibraryCode"
 STAGE="$BUILD_DIR/pkg"

@@ -20,6 +20,7 @@ namespace
     constexpr float amountSliderGapRatio  = 10.0f  / 720.0f;
     constexpr float soloStripWidthRatio   = 50.0f  / 720.0f;
     constexpr float amountSliderInsetRatio = 14.0f / 600.0f;
+    constexpr float brandInsetRatio       = 16.0f  / 720.0f;
 
     constexpr float knobHoverScale       = 1.06f;
     constexpr float amountThumbHoverScale = 1.15f;
@@ -68,6 +69,7 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     titleLabel.setColour (juce::Label::textColourId, textColour);
     titleLabel.setFont (juce::Font (juce::FontOptions (titleTypeface).withHeight (52.0f)));
     addAndMakeVisible (titleLabel);
+    addAndMakeVisible (brandBadge); // added after the title so it sits on top of the full-width title label
 
     generateNoiseTexture();
 
@@ -460,7 +462,14 @@ void AudioPluginAudioProcessorEditor::resized()
     auto heightPx = [h] (float ratio) { return (int) std::round (h * ratio); };
     auto widthPx  = [w] (float ratio) { return (int) std::round (w * ratio); };
 
-    titleLabel.setBounds (area.removeFromTop (heightPx (titleHeightRatio)));
+    const auto titleRow = area.removeFromTop (heightPx (titleHeightRatio));
+    titleLabel.setBounds (titleRow);
+
+    // Maker's mark floats over the left end of the title row; the title keeps the full
+    // width so it stays centred on the window.
+    brandBadge.setBounds (titleRow.withTrimmedLeft (widthPx (brandInsetRatio))
+                                  .withWidth (brandBadge.getIdealWidth())
+                                  .withSizeKeepingCentre (brandBadge.getIdealWidth(), 20));
 
     auto bandRow = area.removeFromTop (heightPx (bandRowHeightRatio));
 
