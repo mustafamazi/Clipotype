@@ -1,0 +1,51 @@
+name: Windows Installer
+
+on:
+  workflow_dispatch:
+
+jobs:
+  installer:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # No -G: CMake picks the newest installed Visual Studio generator on Windows
+      - name: Configure
+        run: cmake -S . -B build -A x64 -DCLIPOTYPE_COPY_AFTER_BUILD=OFF
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      # The installer copies the VST3 as a bundle folder; fail early if JUCE ever outputs a single file instead.
+      - name: Check VST3 layout
+        shell: pwsh
+        run: |
+          $vst3 = "build/Clipotype_artefacts/Release/VST3/Clipotype.vst3"
+          if (-not (Test-Path $vst3 -PathType Container)) { throw "Expected a VST3 bundle folder at $vst3" }
+          Get-ChildItem -Recurse -File $vst3 | ForEach-Object { $_.FullName }
+
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $match = Select-String -Path CMakeLists.txt -Pattern 'project\(Clipotype VERSION ([0-9.]+)\)'
+          if (-not $match) { throw "Version not found in CMakeLists.txt" }
+          "value=$($match.Matches[0].Groups[1].Value)" >> $env:GITHUB_OUTPUT
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = (Get-Command iscc -ErrorAction Stop).Source }
+          $buildDir = (Resolve-Path "build/Clipotype_artefacts/Release").Path
+          & $iscc "/DAppVersion=${{ steps.version.outputs.value }}" "/DBuildDir=$buildDir" installer/Clipotype.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: installer/Output/Clipotype-v${{ steps.version.outputs.value }}-Windows-Setup.exe
+          archive: false
