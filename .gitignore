@@ -4,3 +4,4 @@ build-release/
 *.vst3
 *.component
 *.app
+installer/Output/
