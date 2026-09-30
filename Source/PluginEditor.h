@@ -4,6 +4,7 @@
 #include "ClipotypeLookAndFeel.h"
 #include "FrequencyMapComponent.h"
 #include "PillToggleButton.h"
+#include "BrandBadge.h"
 
 //==============================================================================
 class AudioPluginAudioProcessorEditor final : public juce::AudioProcessorEditor,
@@ -46,6 +47,7 @@ private:
     juce::Colour currentBackgroundColour;
 
     juce::Label titleLabel;
+    BrandBadge brandBadge { juce::Colour (ClipotypeLookAndFeel::textColourArgb) };
 
     juce::TextButton lowButton  { "LOW" };
     juce::TextButton midButton  { "MID" };

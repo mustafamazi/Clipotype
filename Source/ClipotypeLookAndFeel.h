@@ -38,8 +38,8 @@ public:
 
     juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override;
 
-private:
     static juce::Path buildHeptagonPath (juce::Point<float> centre, float radius);
 
+private:
     juce::Typeface::Ptr robotoMonoTypeface;
 };
